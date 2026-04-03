@@ -1,0 +1,32 @@
+{
+  "twitter15": {
+    "exists": true,
+    "label_file": true,
+    "source_file": true
+  },
+  "twitter16": {
+    "exists": true,
+    "label_file": true,
+    "source_file": true
+  },
+  "weibo": {
+    "exists": true,
+    "fake_news_dirs": 5661,
+    "real_news_dirs": 5668
+  },
+  "pheme": {
+    "exists": true,
+    "event_count": 9,
+    "events": [
+      "charliehebdo-all-rnr-threads",
+      "ebola-essien-all-rnr-threads",
+      "ferguson-all-rnr-threads",
+      "germanwings-crash-all-rnr-threads",
+      "gurlitt-all-rnr-threads",
+      "ottawashooting-all-rnr-threads",
+      "prince-toronto-all-rnr-threads",
+      "putinmissing-all-rnr-threads",
+      "sydneysiege-all-rnr-threads"
+    ]
+  }
+}

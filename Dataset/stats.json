@@ -1,0 +1,24 @@
+{
+  "total_records": 20062,
+  "by_dataset": {
+    "twitter15": 1490,
+    "twitter16": 818,
+    "weibo": 11329,
+    "pheme": 6425
+  },
+  "by_label": {
+    "unverified": 1273,
+    "non-rumor": 4601,
+    "true": 7314,
+    "false": 6874
+  },
+  "split_sizes": {
+    "train": 16048,
+    "val": 2005,
+    "test": 2009
+  },
+  "avg_comment_count": 40.26308443824145,
+  "emotion_enriched": false,
+  "fact_enriched": false,
+  "max_per_dataset": null
+}
