@@ -116,8 +116,12 @@ By default these files are written directly under `Datasets/`.
 
 When augmentation is enabled, additional files are produced:
 
-- `augmented_pairs.jsonl` (emotion-consistent Gemini augmentation pairs for train split)
+- `augmented_records.jsonl` (Gemini-generated augmentation rows)
 - `augmentation_stats.json` (generation/acceptance summary)
+
+Detailed augmentation documentation:
+
+- `docs/data_augmentation.md`
 
 ## Unified label space
 
