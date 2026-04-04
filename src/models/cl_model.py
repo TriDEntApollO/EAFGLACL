@@ -37,6 +37,18 @@ from transformers import AutoTokenizer, TFBertModel
 
 class Config:
     # Paths
+    """
+    If you face issue with dataset path replace -->
+    DATA_PATH        = "Complete_data.jsonl"   to 
+    "
+    current_dir = os.path.dirname(os.path.abspath(__file__))  # .../src/emotion
+    base_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))  # .../EAFGLACL
+
+    dataset_dir = os.path.join(base_dir, 'Dataset')
+    os.makedirs(dataset_dir, exist_ok=True)
+    DATA_PATH        = os.path.join(dataset_dir, 'Complete_data.jsonl')
+    "
+    """
     DATA_PATH        = "Complete_data.jsonl"          # input dataset
     OUTPUT_DIR       = "cl_outputs"                   # all outputs saved here
 
