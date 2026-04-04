@@ -28,7 +28,7 @@ from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, accuracy_score
-from transformers import AutoTokenizer, TFAutoModel
+from transformers import AutoTokenizer, TFBertModel
 
 
 # =============================================================================
@@ -37,12 +37,7 @@ from transformers import AutoTokenizer, TFAutoModel
 
 class Config:
     # Paths
-    current_dir = os.path.dirname(os.path.abspath(__file__))  # .../src/emotion
-    base_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))  # .../EAFGLACL
-
-    dataset_dir = os.path.join(base_dir, 'Dataset')
-    os.makedirs(dataset_dir, exist_ok=True)
-    DATA_PATH        = os.path.join(dataset_dir, 'Complete_data.jsonl')         # input dataset
+    DATA_PATH        = "Complete_data.jsonl"          # input dataset
     OUTPUT_DIR       = "cl_outputs"                   # all outputs saved here
 
     # Model
@@ -596,7 +591,7 @@ def main():
     # ── 2. Setup tokenizer & encoder ─────────────────────────────────
     print("\n[2/5] Loading BERT tokenizer & model...")
     tokenizer  = AutoTokenizer.from_pretrained(config.BERT_MODEL_NAME)
-    bert_model = TFAutoModel.from_pretrained(config.BERT_MODEL_NAME)
+    bert_model = TFBertModel.from_pretrained(config.BERT_MODEL_NAME)
     print(f"  BERT loaded: {config.BERT_MODEL_NAME}")
 
     # ── 3. Label encoding ────────────────────────────────────────────
