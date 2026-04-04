@@ -6,7 +6,7 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from data.normalization import clean_text, normalize_label
+from data_prep.normalization import clean_text, normalize_label
 
 
 def test_label_normalization() -> None:

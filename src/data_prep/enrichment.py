@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from augmentation.emotion_filter import EmotionFilter
-from data.schema import UnifiedRecord
-from fact.wikipedia_verifier import WikipediaFactVerifier
+from data_prep.schema import UnifiedRecord
+from emotion.filter import EmotionFilter
 
 
 def enrich_records(
@@ -14,7 +13,11 @@ def enrich_records(
         return records
 
     emotion_model = EmotionFilter() if enable_emotion else None
-    fact_verifier = WikipediaFactVerifier() if enable_fact else None
+    fact_verifier = None
+    if enable_fact:
+        from fact.wikipedia_verifier import WikipediaFactVerifier
+
+        fact_verifier = WikipediaFactVerifier()
 
     for record in records:
         if emotion_model is not None:

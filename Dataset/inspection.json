@@ -9,10 +9,16 @@
     "label_file": true,
     "source_file": true
   },
-  "weibo": {
+  "rumoureval": {
     "exists": true,
-    "fake_news_dirs": 5661,
-    "real_news_dirs": 5668
+    "unified_root_exists": true,
+    "unified_root": "rumoureval-2019-data",
+    "train_exists": true,
+    "test_exists": true,
+    "train_root": "rumoureval-2019-data",
+    "test_root": "rumoureval-2019-data",
+    "train_json_files": 9040,
+    "test_json_files": 9040
   },
   "pheme": {
     "exists": true,

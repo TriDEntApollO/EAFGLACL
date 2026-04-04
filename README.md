@@ -4,7 +4,7 @@ This repository implements an extended LACL-style pipeline for misinformation de
 
 - `Twitter15`
 - `Twitter16`
-- `Weibo v2`
+- `RumourEval`
 - `PHEME`
 
 The current focus is data pipeline and preprocessing, with modular hooks for:
@@ -16,7 +16,7 @@ The current focus is data pipeline and preprocessing, with modular hooks for:
 ## Dataset sources
 
 - Twitter15/Twitter16: https://www.kaggle.com/datasets/syntheticprogrammer/rumor-detection-acl-2017
-- Weibo v2: https://www.kaggle.com/datasets/yangzhou32/socialnet-weibo-version-2
+- RumourEval: https://www.kaggle.com/datasets/thedevastator/rumoureval-2019-rumour-verification-dataset
 - PHEME: https://figshare.com/articles/dataset/PHEME_dataset_for_Rumour_Detection_and_Veracity_Classification/6392078
 
 ## Data locations
@@ -34,9 +34,9 @@ Expected raw structure:
     all-rnr-annotated-threads/          # extracted from PHEME_veracity.tar.bz2
   twitter15/                            # extracted from Twitter.zip
   twitter16/                            # extracted from Twitter.zip
-  Weibo/
-    fake_news/                          # moved directly under Weibo/
-    real_news/                          # moved directly under Weibo/
+  RumourEval/
+    train/
+    test/
 ```
 
 ## Quick start
@@ -47,17 +47,50 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Create your local secrets file:
+
+```bash
+copy .env.example .env
+```
+
+Then edit `.env` and set `GEMINI_API_KEY`.
+
 Run preprocessing:
 
 ```bash
 python scripts/preprocess.py
 ```
 
+This now builds only `unified_records.jsonl` (split generation is deferred).
+
 Enable emotion + fact-aware enrichment:
 
 ```bash
 python scripts/preprocess.py --enable-emotion --enable-fact
 ```
+
+Run Gemini augmentation on the train split and write accepted pairs to a separate artifact:
+
+```bash
+python scripts/preprocess.py --enable-augmentation
+```
+
+Augmentation-only mode on existing splits (skip rebuilding datasets):
+
+```bash
+python scripts/preprocess.py --enable-augmentation --augment-only --augmentation-max-records 200
+```
+
+Rate-limit aware augmentation controls:
+
+```bash
+python scripts/preprocess.py --enable-augmentation --augment-only --augmentation-target-entries 200 --augmentation-tpm-limit 250000
+```
+
+You can also set these in `.env`:
+
+- `AUGMENTATION_TARGET_ENTRIES=200`
+- `GEMINI_TPM_LIMIT=250000`
 
 Fast smoke run with a per-dataset cap:
 
@@ -76,11 +109,15 @@ python scripts/inspect_datasets.py
 After preprocessing, the output directory contains:
 
 - `unified_records.jsonl` (all unified examples)
-- `train.jsonl`, `val.jsonl`, `test.jsonl` (stratified splits)
 - `stats.json` (label + dataset stats)
 - `inspection.json` (dataset structure checks)
 
 By default these files are written directly under `Datasets/`.
+
+When augmentation is enabled, additional files are produced:
+
+- `augmented_pairs.jsonl` (emotion-consistent Gemini augmentation pairs for train split)
+- `augmentation_stats.json` (generation/acceptance summary)
 
 ## Unified label space
 
@@ -93,11 +130,10 @@ By default these files are written directly under `Datasets/`.
 
 ```text
 src/
-  data/                  # dataset loaders + normalization + split builder
+  data_prep/            # dataset loaders + normalization + unified dataset builder
   augmentation/          # LLM augmentation + emotion-preserving filtering hooks
   fact/                  # external verification hooks (Wikipedia-backed)
   models/                # baseline encoder/training interfaces (scaffold)
-  preprocessing/         # preprocessing schemas/loaders scaffolds
 scripts/
   preprocess.py
   inspect_datasets.py

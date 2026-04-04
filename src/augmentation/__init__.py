@@ -1,5 +1,11 @@
 """Augmentation interfaces for LLM-driven positive pair generation."""
 
-from .emotion_filter import EmotionFilter, filter_emotion_consistent_candidates
+from .gemini_augmenter import GeminiAugmentationClient, GeminiAugmentationError
+from .pipeline import AugmentationConfig, run_train_augmentation
 
-__all__ = ["EmotionFilter", "filter_emotion_consistent_candidates"]
+__all__ = [
+	"AugmentationConfig",
+	"GeminiAugmentationClient",
+	"GeminiAugmentationError",
+	"run_train_augmentation",
+]

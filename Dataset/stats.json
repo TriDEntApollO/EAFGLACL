@@ -1,24 +1,22 @@
 {
-  "total_records": 20062,
+  "total_records": 8814,
   "by_dataset": {
-    "twitter15": 1490,
+    "pheme": 6425,
     "twitter16": 818,
-    "weibo": 11329,
-    "pheme": 6425
+    "twitter15": 1490,
+    "rumoureval": 81
   },
   "by_label": {
-    "unverified": 1273,
     "non-rumor": 4601,
-    "true": 7314,
-    "false": 6874
+    "true": 1677,
+    "false": 1253,
+    "unverified": 1283
   },
-  "split_sizes": {
-    "train": 16048,
-    "val": 2005,
-    "test": 2009
-  },
-  "avg_comment_count": 40.26308443824145,
+  "avg_comment_count": 11.223961878829135,
   "emotion_enriched": false,
   "fact_enriched": false,
-  "max_per_dataset": null
+  "max_per_dataset": null,
+  "shuffled": true,
+  "shuffle_seed": 42,
+  "split_deferred": true
 }

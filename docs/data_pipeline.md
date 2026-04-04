@@ -1,124 +1,102 @@
 # EAFGLACL Data Pipeline
 
 ## Scope
-This document describes the end-to-end preprocessing pipeline used to unify four misinformation datasets into one JSONL corpus for model training:
+This document describes the current preprocessing pipeline used to build one unified JSONL corpus for downstream augmentation and training.
 
+Source datasets:
 1. Twitter15
 2. Twitter16
-3. Weibo v2
+3. RumourEval (train and test merged)
 4. PHEME
 
-The primary output is a unified dataset written directly under `Datasets/`.
+Primary output:
+1. Datasets/unified_records.jsonl
 
-## Read-Only Constraint
-Raw dataset folders are treated as read-only inputs under `.datasets_raw/`:
+## Directory Responsibilities
+1. src/dataa_prep/: core preprocessing library code (loaders, normalization, enrichment, unified builder, inspection)
+2. scripts/preprocess.py: top-level orchestration entry point
+3. scripts/inspect_datasets.py: inspection-only entry point
 
-1. `.datasets_raw/twitter15/`
-2. `.datasets_raw/twitter16/`
-3. `.datasets_raw/Weibo/`
-4. `.datasets_raw/PHEME/`
+## Read-Only Inputs
+Raw data is read from .datasets_raw/ and not modified.
 
-All generated files are written only to `Datasets/`.
-
-## Entry Scripts
-Pipeline execution is done via:
-
-1. `scripts/inspect_datasets.py`
-2. `scripts/preprocess.py`
-
-## Commands Used
-From repository root:
-
-```powershell
-& "f:/Important/Programming Projects/LALC/.venv/Scripts/python.exe" "scripts/inspect_datasets.py" --data-root ".datasets_raw" --output "Datasets/inspection.json"
-& "f:/Important/Programming Projects/LALC/.venv/Scripts/python.exe" "scripts/preprocess.py" --data-root ".datasets_raw" --output-dir "Datasets"
-```
+Expected layout:
+1. .datasets_raw/twitter15/
+2. .datasets_raw/twitter16/
+3. .datasets_raw/RumourEval/train/ and .datasets_raw/RumourEval/test/ (or)
+4. .datasets_raw/RumourEval/rumoureval-2019-training-data/ and .datasets_raw/RumourEval/rumoureval-2019-test-data/
+5. .datasets_raw/PHEME/all-rnr-annotated-threads/
 
 ## Pipeline Stages
 1. Structure inspection
-- Confirms required dataset layout and expected source files/directories.
-- Produces `inspection.json`.
+- Validates source folders and expected file presence.
+- Writes Datasets/inspection.json.
 
-2. Dataset-specific loading
-- Twitter15/Twitter16: load from `label.txt` and `source_tweets.txt`.
-- Weibo: load `fake_news/` and `real_news/` directly under `.datasets_raw/Weibo/`.
-- PHEME: load events from `all-rnr-annotated-threads/`.
+2. Dataset loading
+- Twitter15/16: label.txt + source_tweets.txt
+- RumourEval: recursively loads JSON samples from train and test folders and unifies them
+  - Source posts only are ingested (raw.json and source-tweet/source-tweets files); replies are excluded.
+- PHEME: loads threads from all-rnr-annotated-threads
 
 3. Label normalization
-- Unifies labels into one shared space:
-  - `false`
-  - `true`
-  - `unverified`
-  - `non-rumor`
+- Normalized label space:
+  - false
+  - true
+  - unverified
+  - non-rumor
 
 4. Unified schema conversion
-- Every sample is converted into the shared record format (`UnifiedRecord`) with mandatory and optional fields.
+- Converts samples to UnifiedRecord shape.
 
-5. Stratified split generation
-- Creates `train/val/test` splits stratified by label.
-- Default ratios: 0.8/0.1/0.1.
+5. Optional enrichment hooks
+- Emotion annotation (enable_emotion)
+- Fact consistency scoring (enable_fact)
 
-6. Artifact writing
-- Writes full corpus + splits in JSONL.
-- Writes aggregate dataset statistics in JSON.
+6. Diversity shuffle
+- Unified records are shuffled with a deterministic seed before write.
 
-## Unified Schema
-Each output row includes:
-
-1. `record_id` (string)
-2. `dataset` (string)
-3. `label` (string)
-4. `text` (string)
-5. Optional fields:
-   - `language`
-   - `event`
-   - `thread_id`
-   - `source_id`
-   - `emotion`
-   - `emotion_confidence`
-   - `fact_consistency_score`
-   - `comments` (list of strings)
-   - `metadata` (dict)
+7. Artifact write
+- Writes only unified_records.jsonl (split generation deferred to a later stage).
+- Writes stats.json and inspection.json.
 
 ## Output Artifacts
-Generated under `Datasets/`:
+Generated under Datasets/:
+1. unified_records.jsonl
+2. stats.json
+3. inspection.json
 
-1. `inspection.json`: layout/availability checks
-2. `unified_records.jsonl`: full merged dataset
-3. `train.jsonl`: training split
-4. `val.jsonl`: validation split
-5. `test.jsonl`: test split
-6. `stats.json`: totals, distributions, split counts
+When augmentation is enabled:
+1. augmented_pairs.jsonl
+2. augmentation_stats.json
 
-## Current Run Summary
-From `Datasets/stats.json`:
+## Augmentation Input and Rate Control
+Augmentation reads from unified_records.jsonl.
 
-1. `total_records`: 20062
-2. `by_dataset`:
-   - twitter15: 1490
-   - twitter16: 818
-   - weibo: 11329
-   - pheme: 6425
-3. `by_label`:
-   - false: 6874
-   - true: 7314
-   - non-rumor: 4601
-   - unverified: 1273
-4. `split_sizes`:
-   - train: 16048
-   - val: 2005
-   - test: 2009
+Batch behavior:
+1. Targets 200 source entries per Gemini request.
+2. Estimates token usage per request and reduces batch size when needed.
+3. Enforces TPM limit (default 250000).
+4. Waits for minute window reset before sending the next request when budget would be exceeded.
 
-## Validation Checklist
-1. `inspection.json` indicates all four datasets are present.
-2. All six output files exist in `Datasets/`.
-3. `train + val + test == total_records`.
-4. Labels are in the normalized label space.
+Supported controls:
+1. CLI: --augmentation-target-entries, --augmentation-tpm-limit
+2. .env: AUGMENTATION_TARGET_ENTRIES, GEMINI_TPM_LIMIT
 
-## Next Integration Step
-Use `Datasets/train.jsonl` as input to LLM augmentation and then apply:
+## Example Commands
+Run inspection only:
 
-1. Emotion consistency filtering
-2. External fact verification scoring
+```powershell
+python scripts/inspect_datasets.py --data-root .datasets_raw --output Datasets/inspection.json
+```
 
-before final contrastive training.
+Run preprocessing (unified dataset only):
+
+```powershell
+python scripts/preprocess.py --data-root .datasets_raw --output-dir Datasets
+```
+
+Run augmentation from unified records with rate control:
+
+```powershell
+python scripts/preprocess.py --enable-augmentation --augment-only --augmentation-target-entries 200 --augmentation-tpm-limit 250000
+```
