@@ -1,0 +1,8 @@
+# LACL Contrastive Learning Module — Requirements
+# Install with: pip install -r requirements.txt
+
+tensorflow>=2.12.0
+tf-keras>=2.12.0
+transformers>=4.30.0
+scikit-learn>=1.2.0
+numpy>=1.23.0
