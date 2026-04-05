@@ -32,8 +32,32 @@ def _fallback_load_dotenv(dotenv_path: Path) -> None:
             os.environ[key] = value
 
 
+def _print_phase_quick_help() -> None:
+    print("No pipeline phase selected.")
+    print()
+    print("Phases:")
+    print("  --enable-unified-build    Build unified_records.jsonl from raw datasets.")
+    print("  --enable-augmentation     Generate augmented_records.jsonl from unified records.")
+    print("  --enable-emotion-filter   Filter augmented pairs and build complete_data.jsonl.")
+    print()
+    print("Examples:")
+    print("  Unified build only:")
+    print("    python scripts/preprocess.py --enable-unified-build")
+    print("  Augmentation only:")
+    print("    python scripts/preprocess.py --enable-augmentation")
+    print("  Full pipeline:")
+    print("    python scripts/preprocess.py --enable-unified-build --enable-augmentation --enable-emotion-filter")
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build unified dataset for EAFGLACL.")
+    parser = argparse.ArgumentParser(
+        description="Run selected data pipeline phases for EAFGLACL."
+    )
+    parser.add_argument(
+        "--enable-unified-build",
+        action="store_true",
+        help="Build unified dataset artifacts from raw datasets.",
+    )
     parser.add_argument(
         "--data-root",
         type=Path,
@@ -58,12 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable-emotion",
         action="store_true",
-        help="Annotate each record with predicted emotion.",
-    )
-    parser.add_argument(
-        "--enable-fact",
-        action="store_true",
-        help="Annotate each record with Wikipedia-based fact consistency score.",
+        help="Annotate unified records with predicted emotion (unified-build phase only).",
     )
     parser.add_argument(
         "--enable-augmentation",
@@ -71,9 +90,9 @@ def parse_args() -> argparse.Namespace:
         help="Generate Gemini-based emotion-consistent augmentation pairs for unified dataset entries.",
     )
     parser.add_argument(
-        "--augment-only",
+        "--enable-emotion-filter",
         action="store_true",
-        help="Skip preprocessing and run augmentation only on existing unified dataset file.",
+        help="Run emotion filtering and merge stage.",
     )
     parser.add_argument(
         "--augmentation-input",
@@ -85,13 +104,31 @@ def parse_args() -> argparse.Namespace:
         "--augmentation-output",
         type=Path,
         default=None,
-        help="Output JSONL for accepted augmentation pairs (default: <output-dir>/augmented_pairs.jsonl).",
+        help="Output JSONL for accepted augmentation pairs (default: <output-dir>/augmented_records.jsonl).",
     )
     parser.add_argument(
         "--augmentation-stats-output",
         type=Path,
         default=None,
         help="Output JSON for augmentation stats (default: <output-dir>/augmentation_stats.json).",
+    )
+    parser.add_argument(
+        "--emotion-filter-input",
+        type=Path,
+        default=None,
+        help="Input JSONL for emotion filtering (default: <output-dir>/augmented_records.jsonl).",
+    )
+    parser.add_argument(
+        "--emotion-filter-output",
+        type=Path,
+        default=None,
+        help="Output JSONL for filtered augmentations (default: <output-dir>/filtered_augmented_data.jsonl).",
+    )
+    parser.add_argument(
+        "--emotion-complete-output",
+        type=Path,
+        default=None,
+        help="Output JSONL for merged+shuffled complete data (default: <output-dir>/complete_data.jsonl).",
     )
     parser.add_argument(
         "--augmentation-max-records",
@@ -158,8 +195,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    from data_prep.builder import build_unified_dataset
-    from data_prep.inspection import write_inspection_report
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -170,9 +205,23 @@ def main() -> None:
     else:
         _fallback_load_dotenv(dotenv_path)
 
-    result: dict[str, object] = {}
+    phase_flags = {
+        "unified_build": args.enable_unified_build,
+        "augmentation": args.enable_augmentation,
+        "emotion_filter": args.enable_emotion_filter,
+    }
+    selected_phases = [phase for phase, enabled in phase_flags.items() if enabled]
+    if not selected_phases:
+        _print_phase_quick_help()
+        raise SystemExit(1)
 
-    if not args.augment_only:
+    result: dict[str, object] = {}
+    result["phases"] = selected_phases
+
+    if args.enable_unified_build:
+        from data_prep.builder import build_unified_dataset
+        from data_prep.inspection import write_inspection_report
+
         inspection = write_inspection_report(args.data_root, args.output_dir / "inspection.json")
         stats = build_unified_dataset(
             data_root=args.data_root,
@@ -182,7 +231,7 @@ def main() -> None:
             seed=args.seed,
             max_per_dataset=args.max_per_dataset,
             enable_emotion=args.enable_emotion,
-            enable_fact=args.enable_fact,
+            enable_fact=False,
         )
 
         result["inspection"] = inspection
@@ -245,6 +294,23 @@ def main() -> None:
             )
         )
         result["augmentation"] = augmentation_stats
+
+    if args.enable_emotion_filter:
+        from emotion.pipeline import run_emotion_filter_pipeline
+
+        emotion_filter_input = args.emotion_filter_input or (args.output_dir / "augmented_records.jsonl")
+        emotion_filter_output = args.emotion_filter_output or (
+            args.output_dir / "filtered_augmented_data.jsonl"
+        )
+        emotion_complete_output = args.emotion_complete_output or (args.output_dir / "complete_data.jsonl")
+        emotion_stats = run_emotion_filter_pipeline(
+            augmented_input_path=emotion_filter_input,
+            unified_input_path=args.output_dir / "unified_records.jsonl",
+            filtered_output_path=emotion_filter_output,
+            complete_output_path=emotion_complete_output,
+            seed=args.seed,
+        )
+        result["emotion_filter"] = emotion_stats
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

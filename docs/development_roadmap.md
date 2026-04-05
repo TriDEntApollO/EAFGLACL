@@ -51,5 +51,5 @@ Build an emotion-aware and fact-grounded misinformation detector that extends LA
 1. Completed: run full preprocessing on Twitter15, Twitter16, Weibo, and PHEME.
 2. Completed: generate unified JSONL artifacts under `Datasets/`.
 3. Completed: review dataset and label distributions from `Datasets/stats.json`.
-4. Completed: publish preprocessing process documentation in `docs/data_pipeline.md`.
+4. Completed: publish unification and pipeline docs in `docs/data_unification.md` and `docs/data_pipeline_overview.md`.
 5. Next: freeze v1 data artifacts and begin augmentation plus enrichment experiments.

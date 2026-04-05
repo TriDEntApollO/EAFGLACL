@@ -11,7 +11,7 @@ The pipeline reads unified source records from JSONL, generates rewritten candid
 ## Inputs and Outputs
 
 ### Input
-1. Default input file: `Dataset/unified_records.jsonl` when `--output-dir Dataset` is used.
+1. Default input file: `Datasets/unified_records.jsonl` when `--output-dir Datasets` is used.
 2. Override input with `--augmentation-input <path>`.
 
 ### Outputs
@@ -28,14 +28,14 @@ Run augmentation only (recommended):
 
 ```powershell
 # inside the virtual env
-python ./scripts/preprocess.py --enable-augmentation --augment-only --output-dir Dataset
+python ./scripts/preprocess.py --enable-augmentation --output-dir Datasets
 ```
 
 Run a small smoke test:
 
 ```powershell
 # inside the virtual env
-python ./scripts/preprocess.py --enable-augmentation --augment-only --output-dir Dataset --augmentation-max-records 50
+python ./scripts/preprocess.py --enable-augmentation --output-dir Datasets --augmentation-max-records 50
 ```
 
 ## Environment Configuration
@@ -58,20 +58,19 @@ CLI values override `.env` values where provided.
 
 Common augmentation flags:
 1. `--enable-augmentation`
-2. `--augment-only`
-3. `--augmentation-input`
-4. `--augmentation-output`
-5. `--augmentation-stats-output`
-6. `--augmentation-max-records`
-7. `--augmentation-candidates-per-record`
-8. `--gemini-model`
-9. `--augmentation-temperature`
-10. `--augmentation-top-p`
-11. `--augmentation-max-output-tokens`
-12. `--augmentation-target-entries`
-13. `--augmentation-rpm-limit`
-14. `--augmentation-tpm-limit`
-15. `--augmentation-rolling-window-seconds`
+2. `--augmentation-input`
+3. `--augmentation-output`
+4. `--augmentation-stats-output`
+5. `--augmentation-max-records`
+6. `--augmentation-candidates-per-record`
+7. `--gemini-model`
+8. `--augmentation-temperature`
+9. `--augmentation-top-p`
+10. `--augmentation-max-output-tokens`
+11. `--augmentation-target-entries`
+12. `--augmentation-rpm-limit`
+13. `--augmentation-tpm-limit`
+14. `--augmentation-rolling-window-seconds`
 
 ## Execution Flow
 

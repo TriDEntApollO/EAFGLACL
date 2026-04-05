@@ -1,5 +1,5 @@
-"""Modeling scaffolds for LACL training."""
+"""Modeling utilities for LACL training."""
 
-from .interfaces import TrainingBatch
+from .cl_model import Config, run_training
 
-__all__ = ["TrainingBatch"]
+__all__ = ["Config", "run_training"]

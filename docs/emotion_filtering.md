@@ -46,8 +46,8 @@ The module is designed to be modular, scalable, and efficient, and can be integr
   - Groups augmentations per original sample
   - Avoids redundant emotion computation
 
-- main.py
-  - Entry point of the module
+- pipeline.py
+  - Reusable module entrypoint used by preprocessing.
   - Runs full pipeline:
     Load → Filter → Merge → Output
 
@@ -97,7 +97,15 @@ Original Text → Emotion Extraction → Augmented Text → Emotion Extraction �
 
 Activate environment and run:
 
-python src/emotion/main.py
+python scripts/preprocess.py --enable-emotion-filter
+
+This command reads the default artifacts from `Datasets/`:
+- `augmented_records.jsonl`
+- `unified_records.jsonl`
+
+And writes:
+- `filtered_augmented_data.jsonl`
+- `complete_data.jsonl`
 
 ---
 

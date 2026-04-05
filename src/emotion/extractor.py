@@ -1,7 +1,7 @@
 import torch
 import warnings  # 🔥 Import Python's built-in warnings
 from transformers import pipeline, logging
-from config import STANDARD_EMOTIONS
+from .config import STANDARD_EMOTIONS
 
 # Silence Hugging Face's custom logger
 logging.set_verbosity_error()

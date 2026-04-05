@@ -21,6 +21,7 @@ Framework   : TensorFlow 2.x / tf-keras
 
 import os
 import json
+from pathlib import Path
 import numpy as np
 import tensorflow as tf
 import tf_keras as keras
@@ -448,6 +449,7 @@ def train_contrastive(model, dataset, config: Config):
         epoch_losses = []
 
         for step, batch in enumerate(dataset):
+            print(f"Total Epochs: {config.CL_EPOCHS}, Total Steps: {len(dataset)}, Current Epoch: {epoch+1}, Current Step: {step+1}")
             loss = cl_train_step(model, batch, optimizer, config.TEMPERATURE)
             epoch_losses.append(float(loss))
 
@@ -595,6 +597,24 @@ def main():
     print("=" * 65)
 
     config = Config()
+    run_training(data_path=config.DATA_PATH, output_dir=config.OUTPUT_DIR, config=config)
+
+
+def run_training(
+    data_path: str,
+    output_dir: str,
+    config: Config | None = None,
+    emotion_sim_threshold: float | None = None,
+) -> dict:
+    config = config or Config()
+    config.DATA_PATH = data_path
+    config.OUTPUT_DIR = output_dir
+    if emotion_sim_threshold is not None:
+        config.EMOTION_SIM_THRESHOLD = emotion_sim_threshold
+
+    if not Path(config.DATA_PATH).exists():
+        raise FileNotFoundError(f"Training data file not found: {config.DATA_PATH}")
+
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
     # ── 1. Load & pair data ──────────────────────────────────────────
@@ -655,6 +675,14 @@ def main():
     print(f"   classification_report.txt              ← eval results")
     print(f"   training_history.json                  ← loss/accuracy curves")
     print("=" * 65)
+
+    return {
+        "data_path": config.DATA_PATH,
+        "output_dir": config.OUTPUT_DIR,
+        "test_accuracy": acc,
+        "handoff_path": handoff_path,
+        "history_path": history_path,
+    }
 
 
 if __name__ == "__main__":

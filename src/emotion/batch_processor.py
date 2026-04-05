@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
-from extractor import EmotionExtractor
-from filter import filter_augmentations
+from .extractor import EmotionExtractor
+from .filter import filter_augmentations
 
 
 class BatchProcessor:

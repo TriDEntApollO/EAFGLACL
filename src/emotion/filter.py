@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List, Dict
 from sklearn.metrics.pairwise import cosine_similarity
-from config import STANDARD_EMOTIONS, BASE_SIMILARITY_THRESHOLD
+from .config import STANDARD_EMOTIONS, BASE_SIMILARITY_THRESHOLD
 
 
 def emotion_to_vector(emotion_dict: dict) -> np.ndarray:
