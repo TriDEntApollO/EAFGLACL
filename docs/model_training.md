@@ -41,6 +41,12 @@ From repository root:
 python scripts/training.py
 ```
 
+Train on dedicated GPU (fails fast if no dedicated GPU is detected):
+
+```powershell
+python scripts/training.py --use-gpu
+```
+
 Override data and output paths:
 
 ```powershell
@@ -79,6 +85,7 @@ Important configurable parameters include:
 - Contrastive hyperparameters (temperature, epochs, batch size).
 - Classifier epochs.
 - Emotion similarity threshold.
+- Device mode via `--use-gpu` (dedicated GPU required).
 
 ## Unified label space
 

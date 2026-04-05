@@ -36,7 +36,7 @@ The current end-to-end workflow is organized into the following phases:
 ## Dataset sources
 
 - Twitter15/Twitter16: https://www.kaggle.com/datasets/syntheticprogrammer/rumor-detection-acl-2017
-- RumourEval: https://www.kaggle.com/datasets/thedevastator/rumoureval-2019-rumour-verification-dataset
+- RumourEval: https://figshare.com/articles/dataset/RumourEval_2019_data/8845580
 - PHEME: https://figshare.com/articles/dataset/PHEME_dataset_for_Rumour_Detection_and_Veracity_Classification/6392078
 
 ## Data locations
@@ -107,12 +107,6 @@ Run full data pipeline phases in one command:
 python scripts/preprocess.py --enable-unified-build --enable-augmentation --enable-emotion-filter
 ```
 
-Run training on filtered + merged data:
-
-```bash
-python scripts/training.py
-```
-
 Augmentation-only mode on existing unified records:
 
 ```bash
@@ -141,6 +135,19 @@ Inspect dataset structure only (fast, no full scan of all records):
 ```bash
 python scripts/inspect_datasets.py
 ```
+
+Run training on filtered + merged data:
+
+```bash
+python scripts/training.py
+```
+
+Run training on dedicated GPU (exits if no dedicated GPU is detected):
+
+```bash
+python scripts/training.py --use-gpu
+```
+
 
 ## Output artifacts
 
