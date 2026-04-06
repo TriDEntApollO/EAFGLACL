@@ -33,6 +33,13 @@ The current end-to-end workflow is organized into the following phases:
 - Trains contrastive + classifier stages from `Datasets/complete_data.jsonl`.
 - Exports artifacts under `outputs/cl_outputs/`.
 
+5. Final evaluation
+- Uses exported training handoff (`outputs/cl_outputs/cl_outputs_for_fact_verification.json`).
+- Reports metrics with and without fact verification.
+- Runs fact verification at model runtime during evaluation (optional).
+- Uses fact consistency score to map rumor predictions to final labels.
+- Produces final evaluation artifacts under `outputs/final_outputs/`.
+
 ## Dataset sources
 
 - Twitter15/Twitter16: https://www.kaggle.com/datasets/syntheticprogrammer/rumor-detection-acl-2017
@@ -148,6 +155,24 @@ Run training on dedicated GPU (exits if no dedicated GPU is detected):
 python scripts/training.py --use-gpu
 ```
 
+Run final evaluation with built-in fact verification flow:
+
+```bash
+python scripts/final_evaluation.py
+```
+
+Run final evaluation with Wikipedia-only fact verification:
+
+```bash
+python scripts/final_evaluation.py --fact-provider wikipedia_only
+```
+
+Run final evaluation baseline-only (without fact verification):
+
+```bash
+python scripts/final_evaluation.py --disable-fact-verification
+```
+
 
 ## Output artifacts
 
@@ -171,6 +196,8 @@ When emotion filtering is enabled, additional files are produced:
 
 Training outputs are produced under `outputs/cl_outputs/`.
 
+Final evaluation outputs are produced under `outputs/final_outputs/`.
+
 Detailed augmentation documentation:
 
 - `docs/data_augmentation.md`
@@ -191,6 +218,10 @@ Detailed model training documentation:
 
 - `docs/model_training.md`
 
+Detailed runtime fact verification documentation:
+
+- `docs/fact_verification_runtime.md`
+
 ## Unified label space
 
 - `false`
@@ -210,4 +241,5 @@ scripts/
   preprocess.py
   inspect_datasets.py
   training.py
+  final_evaluation.py
 ```

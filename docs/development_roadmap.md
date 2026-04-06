@@ -24,15 +24,16 @@ Build an emotion-aware and fact-grounded misinformation detector that extends LA
 - Filter candidates by emotion consistency against source texts.
 - Track acceptance rate and class balance effects.
 
-3. Fact-grounded feature enrichment
-- Extract claim-like spans.
-- Verify claims against trusted sources (Wikipedia first, extensible to other APIs).
-- Produce record-level and claim-level fact consistency features.
-
-4. Contrastive model training
+3. Contrastive model training
 - Baseline transformer encoder + supervised head.
 - Contrastive objective with label-aware and augmentation-aware positive pairs.
-- Ablation runs: baseline vs emotion-only vs fact-only vs combined.
+- Ablation runs: baseline vs emotion-only.
+
+4. Final evaluation with runtime fact verification
+- Run live model inference to produce baseline predicted labels.
+- Apply optional fact verification at runtime (Gemini+Wikipedia or Wikipedia-only).
+- Convert fact consistency score to `fact_label` and compute `final_label` for rumor predictions.
+- Compare baseline vs fact-verified metrics on the same evaluation set.
 
 5. Evaluation and optimization
 - Per-dataset and cross-dataset metrics.
