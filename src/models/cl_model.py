@@ -1,107 +1,91 @@
 """
 =============================================================================
-LACL - Contrastive Learning Module
+LACL - Contrastive Learning Module (PyTorch)
 =============================================================================
 Project     : LLM-Augmented Contrastive Learning for Misinformation Detection
 Module      : Contrastive Learning (CL) — Stage 4 of pipeline
-Input       : Final Dataset (Complete_data.jsonl) from emotion filtering stage
+Input       : Complete_data.jsonl from emotion filtering stage
 Output      : Trained model weights + embeddings + predicted labels JSON
-              → handed off to Fact Verification stage
+              -> handed off to Fact Verification stage
 
-Architecture (follows original LACL paper):
-  - Encoder  : BERT-base-uncased (frozen after CL training)
-  - Projector: 2-layer MLP → projection space for contrastive loss
-  - Loss     : InfoNCE (NT-Xent) contrastive loss with temperature τ
-  - Classifier: Fully connected + Softmax (trained on frozen encoder)
+Architecture:
+  - Encoder   : bert-base-uncased
+  - Projector : 2-layer MLP projection head for contrastive loss
+  - Loss      : InfoNCE (NT-Xent)
+  - Classifier: Linear head trained on frozen encoder embeddings
 
 Labels      : non-rumor, false, true, unverified (4-class)
-Framework   : TensorFlow 2.x / tf-keras
+Framework   : PyTorch + Transformers
 =============================================================================
 """
 
-import os
+from __future__ import annotations
+
+import copy
 import json
+import os
+import random
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
+
 import numpy as np
-import tensorflow as tf
-import tf_keras as keras
-from collections import defaultdict
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report, accuracy_score
-from transformers import AutoTokenizer, TFBertModel
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoModel, AutoTokenizer
 
 
-# =============================================================================
-# CONFIG — change these as needed
-# =============================================================================
-
+@dataclass
 class Config:
-    # Paths
-    """
-    If you face issue with dataset path replace -->
-    DATA_PATH        = "Complete_data.jsonl"   to 
-    "
-    current_dir = os.path.dirname(os.path.abspath(__file__))  # .../src/emotion
-    base_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))  # .../EAFGLACL
+    DATA_PATH: str = "Complete_data.jsonl"
+    OUTPUT_DIR: str = "cl_outputs"
 
-    dataset_dir = os.path.join(base_dir, 'Dataset')
-    os.makedirs(dataset_dir, exist_ok=True)
-    DATA_PATH        = os.path.join(dataset_dir, 'Complete_data.jsonl')
-    "
-    """
-    DATA_PATH        = "Complete_data.jsonl"          # input dataset
-    OUTPUT_DIR       = "cl_outputs"                   # all outputs saved here
+    BERT_MODEL_NAME: str = "bert-base-uncased"
+    MAX_SEQ_LEN: int = 128
+    PROJECTION_DIM: int = 128
+    HIDDEN_DIM: int = 256
 
-    # Model
-    BERT_MODEL_NAME  = "bert-base-uncased"            # encoder backbone
-    MAX_SEQ_LEN      = 128                            # max token length
-    PROJECTION_DIM   = 128                            # MLP projection head output dim
-    HIDDEN_DIM       = 256                            # MLP hidden layer dim
+    TEMPERATURE: float = 0.07
+    CL_EPOCHS: int = 5
+    CL_BATCH_SIZE: int = 32
+    CL_LR: float = 2e-5
 
-    # Contrastive Learning
-    TEMPERATURE      = 0.07                           # τ in InfoNCE loss
-    CL_EPOCHS        = 5                              # contrastive pre-training epochs
-    CL_BATCH_SIZE    = 32                             # pairs per batch
-    CL_LR            = 2e-5                           # learning rate for CL phase
+    CLF_EPOCHS: int = 10
+    CLF_BATCH_SIZE: int = 64
+    CLF_LR: float = 1e-4
+    LOG_EVERY_STEPS: int = 10
 
-    # Classifier
-    CLF_EPOCHS       = 10                             # classifier fine-tuning epochs
-    CLF_BATCH_SIZE   = 64                             # batch size for classifier
-    CLF_LR           = 1e-4                           # learning rate for classifier
+    EMOTION_SIM_THRESHOLD: float = 0.85
 
-    # Emotion similarity threshold (from emotion filtering stage)
-    EMOTION_SIM_THRESHOLD = 0.85                      # only use pairs above this
+    VAL_SIZE: float = 0.1
+    TEST_SIZE: float = 0.2
+    RANDOM_SEED: int = 42
 
-    # Train/Val/Test split
-    VAL_SIZE         = 0.1
-    TEST_SIZE        = 0.2
-    RANDOM_SEED      = 42
-
-    # Labels
-    LABEL_NAMES      = ["non-rumor", "false", "true", "unverified"]
+    LABEL_NAMES: list[str] = field(
+        default_factory=lambda: ["non-rumor", "false", "true", "unverified"]
+    )
 
 
-# =============================================================================
-# STEP 1: DATA LOADING & PAIRING
-# =============================================================================
+def set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-def load_and_pair_data(config: Config):
-    """
-    Reads the JSONL file and creates (original, augmented) positive pairs
-    for contrastive learning.
 
-    Returns:
-        pairs       : list of (orig_text, aug_text, label) tuples
-        all_samples : list of (text, label) for classifier training
-    """
+def load_and_pair_data(config: Config) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
     print("\n[1/5] Loading dataset...")
 
-    originals  = {}   # record_id -> record
-    augmented  = []   # list of augmented records
+    originals: dict[str, dict] = {}
+    augmented: list[dict] = []
 
-    with open(config.DATA_PATH, "r", encoding="utf-8") as f:
-        for line in f:
+    with open(config.DATA_PATH, "r", encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
             if not line:
                 continue
@@ -114,9 +98,7 @@ def load_and_pair_data(config: Config):
     print(f"  Originals  : {len(originals)}")
     print(f"  Augmented  : {len(augmented)}")
 
-    # Build (original, augmented) positive pairs
-    # Each original can have multiple augmented versions → use all pairs
-    pairs = []
+    pairs: list[tuple[str, str, str]] = []
     skipped = 0
 
     for aug in augmented:
@@ -125,479 +107,449 @@ def load_and_pair_data(config: Config):
             skipped += 1
             continue
 
-        # Emotion similarity filter — only high-quality pairs
-        em_sim = aug.get("emotion_similarity", 1.0)
+        em_sim = float(aug.get("emotion_similarity", 1.0))
         if em_sim < config.EMOTION_SIM_THRESHOLD:
             skipped += 1
             continue
 
         orig = originals[orig_id]
-        orig_text = orig.get("text", "").strip()
-        aug_text  = aug.get("text", "").strip()
-        label     = orig.get("label", aug.get("label", "non-rumor"))
+        orig_text = str(orig.get("text", "")).strip()
+        aug_text = str(aug.get("text", "")).strip()
+        label = str(orig.get("label", aug.get("label", "non-rumor")))
 
         if orig_text and aug_text:
             pairs.append((orig_text, aug_text, label))
 
-    # All unique original samples for classifier training
     all_samples = [
-        (rec["text"].strip(), rec["label"])
+        (str(rec["text"]).strip(), str(rec["label"]))
         for rec in originals.values()
-        if rec.get("text", "").strip() and rec.get("label")
+        if str(rec.get("text", "")).strip() and rec.get("label")
     ]
 
     print(f"  Valid pairs: {len(pairs)}  (skipped: {skipped})")
     print(f"  All samples for classifier: {len(all_samples)}")
 
-    # Label distribution
-    from collections import Counter
-    label_dist = Counter(p[2] for p in pairs)
-    print(f"  Label distribution in pairs: {dict(label_dist)}")
-
     return pairs, all_samples
 
 
-# =============================================================================
-# STEP 2: TOKENIZATION
-# =============================================================================
+class ContrastivePairDataset(Dataset):
+    def __init__(self, pairs: list[tuple[str, str, str]], tokenizer, max_len: int) -> None:
+        orig_texts = [p[0] for p in pairs]
+        aug_texts = [p[1] for p in pairs]
 
-def tokenize_texts(texts, tokenizer, max_len):
-    """
-    Tokenizes a list of strings using the BERT tokenizer.
+        self.orig_enc = tokenizer(
+            orig_texts,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors="pt",
+        )
+        self.aug_enc = tokenizer(
+            aug_texts,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors="pt",
+        )
 
-    Returns dict with 'input_ids', 'attention_mask', 'token_type_ids'
-    each as numpy arrays of shape (N, max_len).
-    """
-    enc = tokenizer(
-        texts,
-        padding="max_length",
-        truncation=True,
-        max_length=max_len,
-        return_tensors="np",
-    )
-    return {
-        "input_ids"      : enc["input_ids"],
-        "attention_mask" : enc["attention_mask"],
-        "token_type_ids" : enc.get("token_type_ids",
-                           np.zeros_like(enc["input_ids"])),
-    }
+    def __len__(self) -> int:
+        return self.orig_enc["input_ids"].shape[0]
 
-
-def build_pair_dataset(pairs, tokenizer, config: Config):
-    """
-    Tokenizes all positive pairs and returns TF datasets for CL training.
-
-    Each batch contains:
-        orig_input_ids, orig_attention_mask, orig_token_type_ids,
-        aug_input_ids,  aug_attention_mask,  aug_token_type_ids
-    No labels needed for contrastive pre-training.
-    """
-    orig_texts = [p[0] for p in pairs]
-    aug_texts  = [p[1] for p in pairs]
-
-    print("  Tokenizing original texts...")
-    orig_enc = tokenize_texts(orig_texts, tokenizer, config.MAX_SEQ_LEN)
-    print("  Tokenizing augmented texts...")
-    aug_enc  = tokenize_texts(aug_texts,  tokenizer, config.MAX_SEQ_LEN)
-
-    dataset = tf.data.Dataset.from_tensor_slices((
-        {
-            "orig_input_ids"       : orig_enc["input_ids"],
-            "orig_attention_mask"  : orig_enc["attention_mask"],
-            "orig_token_type_ids"  : orig_enc["token_type_ids"],
-            "aug_input_ids"        : aug_enc["input_ids"],
-            "aug_attention_mask"   : aug_enc["attention_mask"],
-            "aug_token_type_ids"   : aug_enc["token_type_ids"],
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        item = {
+            "orig_input_ids": self.orig_enc["input_ids"][idx],
+            "orig_attention_mask": self.orig_enc["attention_mask"][idx],
+            "aug_input_ids": self.aug_enc["input_ids"][idx],
+            "aug_attention_mask": self.aug_enc["attention_mask"][idx],
         }
-    ))
-
-    dataset = (
-        dataset
-        .shuffle(buffer_size=2048, seed=config.RANDOM_SEED)
-        .batch(config.CL_BATCH_SIZE)
-        .prefetch(tf.data.AUTOTUNE)
-    )
-
-    return dataset
+        if "token_type_ids" in self.orig_enc:
+            item["orig_token_type_ids"] = self.orig_enc["token_type_ids"][idx]
+        if "token_type_ids" in self.aug_enc:
+            item["aug_token_type_ids"] = self.aug_enc["token_type_ids"][idx]
+        return item
 
 
-def build_classifier_dataset(samples, tokenizer, label_encoder, config: Config):
-    """
-    Tokenizes all original samples for classifier training.
-    Returns train/val/test splits as TF datasets.
-    """
-    texts  = [s[0] for s in samples]
-    labels = [s[1] for s in samples]
+class ClassifierDataset(Dataset):
+    def __init__(self, texts: list[str], label_ids: np.ndarray, tokenizer, max_len: int) -> None:
+        self.enc = tokenizer(
+            texts,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors="pt",
+        )
+        self.labels = torch.tensor(label_ids, dtype=torch.long)
 
-    # Encode labels to integers
-    y = label_encoder.transform(labels)
+    def __len__(self) -> int:
+        return self.labels.shape[0]
 
-    print("  Tokenizing classifier samples...")
-    enc = tokenize_texts(texts, tokenizer, config.MAX_SEQ_LEN)
-
-    X = {
-        "input_ids"      : enc["input_ids"],
-        "attention_mask" : enc["attention_mask"],
-        "token_type_ids" : enc["token_type_ids"],
-    }
-
-    # Split into train / val / test
-    indices = np.arange(len(texts))
-    idx_train, idx_test = train_test_split(
-        indices, test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_SEED, stratify=y
-    )
-    idx_train, idx_val = train_test_split(
-        idx_train, test_size=config.VAL_SIZE / (1 - config.TEST_SIZE),
-        random_state=config.RANDOM_SEED, stratify=y[idx_train]
-    )
-
-    def make_ds(idx, shuffle=False):
-        x = {k: v[idx] for k, v in X.items()}
-        y_split = y[idx]
-        ds = tf.data.Dataset.from_tensor_slices((x, y_split))
-        if shuffle:
-            ds = ds.shuffle(buffer_size=1024, seed=config.RANDOM_SEED)
-        return ds.batch(config.CLF_BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-
-    return (
-        make_ds(idx_train, shuffle=True),
-        make_ds(idx_val),
-        make_ds(idx_test),
-        idx_test,
-        y[idx_test],
-        [texts[i] for i in idx_test],
-    )
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        item = {
+            "input_ids": self.enc["input_ids"][idx],
+            "attention_mask": self.enc["attention_mask"][idx],
+            "labels": self.labels[idx],
+        }
+        if "token_type_ids" in self.enc:
+            item["token_type_ids"] = self.enc["token_type_ids"][idx]
+        return item
 
 
-# =============================================================================
-# STEP 3: MODEL ARCHITECTURE
-# =============================================================================
+class ProjectionHead(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, projection_dim: int) -> None:
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.bn = nn.BatchNorm1d(hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, projection_dim)
 
-class ProjectionHead(keras.layers.Layer):
-    """
-    2-layer MLP projection head as described in the LACL paper.
-    Maps BERT [CLS] embeddings → projection space for InfoNCE loss.
-
-    zi = W2 * σ(W1 * fi)
-    """
-
-    def __init__(self, hidden_dim: int, projection_dim: int, **kwargs):
-        super().__init__(**kwargs)
-        self.dense1 = keras.layers.Dense(hidden_dim, activation="relu",
-                                         name="proj_hidden")
-        self.dense2 = keras.layers.Dense(projection_dim, name="proj_output")
-        self.bn     = keras.layers.BatchNormalization(name="proj_bn")
-
-    def call(self, x, training=False):
-        x = self.dense1(x)
-        x = self.bn(x, training=training)
-        x = self.dense2(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.bn(x)
+        x = self.fc2(x)
         return x
 
 
-class CLModel(keras.Model):
-    """
-    Full Contrastive Learning model:
-        BERT encoder  →  [CLS] embedding
-        ProjectionHead → zi (used for InfoNCE loss during CL training)
-        Classifier    → softmax label prediction (trained after CL)
+class CLModel(nn.Module):
+    def __init__(self, encoder: nn.Module, hidden_dim: int, projection_dim: int, num_classes: int) -> None:
+        super().__init__()
+        self.encoder = encoder
+        hidden_size = int(self.encoder.config.hidden_size)
+        self.projector = ProjectionHead(hidden_size, hidden_dim, projection_dim)
+        self.classifier = nn.Linear(hidden_size, num_classes)
 
-    Encoder is SHARED between original and augmented inputs.
-    """
-
-    def __init__(self, bert_model, config: Config, num_classes: int, **kwargs):
-        super().__init__(**kwargs)
-        self.bert       = bert_model
-        self.projector  = ProjectionHead(config.HIDDEN_DIM,
-                                         config.PROJECTION_DIM,
-                                         name="projector")
-        self.classifier = keras.layers.Dense(num_classes, activation="softmax",
-                                             name="classifier")
-
-    def encode(self, input_ids, attention_mask, token_type_ids, training=False):
-        """Pass inputs through BERT and return [CLS] token embedding."""
-        outputs = self.bert(
+    def encode(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        token_type_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        outputs = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
-            training=training,
         )
-        # [CLS] embedding — shape (batch, 768)
         return outputs.last_hidden_state[:, 0, :]
 
-    def project(self, embedding, training=False):
-        """Map embedding to projection space — shape (batch, projection_dim)."""
-        return self.projector(embedding, training=training)
+    def project(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self.projector(embeddings)
 
-    def classify(self, embedding):
-        """Classify from frozen embedding — shape (batch, num_classes)."""
-        return self.classifier(embedding)
+    def classify(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self.classifier(embeddings)
 
-    def call(self, inputs, training=False):
-        """Used during classifier training — single input."""
-        f = self.encode(
-            inputs["input_ids"],
-            inputs["attention_mask"],
-            inputs["token_type_ids"],
-            training=training,
+
+def infonce_loss(z_orig: torch.Tensor, z_aug: torch.Tensor, temperature: float) -> torch.Tensor:
+    z_orig = F.normalize(z_orig, p=2, dim=1)
+    z_aug = F.normalize(z_aug, p=2, dim=1)
+    logits = torch.matmul(z_orig, z_aug.transpose(0, 1)) / temperature
+    targets = torch.arange(logits.shape[0], device=logits.device)
+    loss_a = F.cross_entropy(logits, targets)
+    loss_b = F.cross_entropy(logits.transpose(0, 1), targets)
+    return 0.5 * (loss_a + loss_b)
+
+
+def _to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
+    return {k: v.to(device) for k, v in batch.items()}
+
+
+def train_contrastive(model: CLModel, loader: DataLoader, config: Config, device: torch.device) -> list[float]:
+    print("\n[3/5] Contrastive pre-training...")
+    model.train()
+    params = list(model.encoder.parameters()) + list(model.projector.parameters())
+    optimizer = torch.optim.AdamW(params, lr=config.CL_LR)
+
+    losses: list[float] = []
+
+    for epoch in range(1, config.CL_EPOCHS + 1):
+        epoch_losses: list[float] = []
+        total_steps = len(loader)
+
+        for step, batch in enumerate(loader, start=1):
+            batch = _to_device(batch, device)
+            optimizer.zero_grad()
+
+            orig_emb = model.encode(
+                batch["orig_input_ids"],
+                batch["orig_attention_mask"],
+                batch.get("orig_token_type_ids"),
+            )
+            aug_emb = model.encode(
+                batch["aug_input_ids"],
+                batch["aug_attention_mask"],
+                batch.get("aug_token_type_ids"),
+            )
+
+            z_orig = model.project(orig_emb)
+            z_aug = model.project(aug_emb)
+            loss = infonce_loss(z_orig, z_aug, config.TEMPERATURE)
+            loss.backward()
+            optimizer.step()
+
+            epoch_losses.append(float(loss.item()))
+            if step % config.LOG_EVERY_STEPS == 0 or step == total_steps:
+                running_avg = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+                print(
+                    f"    [CL][Epoch {epoch}/{config.CL_EPOCHS}] "
+                    f"step {step}/{total_steps} "
+                    f"loss={float(loss.item()):.4f} running_avg={running_avg:.4f}"
+                )
+
+        avg_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+        losses.append(avg_loss)
+        print(f"  Epoch {epoch}/{config.CL_EPOCHS} - CL Loss: {avg_loss:.4f}")
+
+    return losses
+
+
+def _safe_stratify_split(
+    indices: np.ndarray,
+    labels: np.ndarray,
+    test_size: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        split = train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=seed,
+            stratify=labels,
         )
-        return self.classify(f)
-
-
-# =============================================================================
-# STEP 4: INFONCE CONTRASTIVE LOSS
-# =============================================================================
-
-def infonce_loss(z_orig, z_aug, temperature: float):
-    """
-    InfoNCE (NT-Xent) contrastive loss as defined in the LACL paper:
-
-        L = -1/(2I) * Σ log [
-              exp(sim(zi, zi') / τ)
-              ─────────────────────────────────────────
-              Σ_{j≠i} exp(sim(zi, zj) / τ)
-            ]
-
-    Positive pair : (z_orig[i], z_aug[i])  — same instance, different expression
-    Negative pairs: all other samples in the batch
-
-    Args:
-        z_orig      : projected embeddings of originals  (batch, proj_dim)
-        z_aug       : projected embeddings of augmented  (batch, proj_dim)
-        temperature : τ hyperparameter
-
-    Returns:
-        scalar loss value
-    """
-    batch_size = tf.shape(z_orig)[0]
-
-    # L2 normalize → cosine similarity via dot product
-    z_orig = tf.math.l2_normalize(z_orig, axis=1)   # (B, D)
-    z_aug  = tf.math.l2_normalize(z_aug,  axis=1)   # (B, D)
-
-    # Concatenate: [orig; aug] → (2B, D)
-    z_all  = tf.concat([z_orig, z_aug], axis=0)      # (2B, D)
-
-    # Full similarity matrix (2B, 2B)
-    sim_matrix = tf.matmul(z_all, z_all, transpose_b=True) / temperature
-
-    # Mask out self-similarity on diagonal
-    mask_diag = tf.eye(2 * batch_size, dtype=tf.bool)
-    sim_matrix = tf.where(mask_diag, tf.fill(tf.shape(sim_matrix), -1e9), sim_matrix)
-
-    # Positive pair indices:
-    # for orig[i] → aug[i]  : positive at index (i, B+i)
-    # for aug[i]  → orig[i] : positive at index (B+i, i)
-    labels_orig = tf.range(batch_size, 2 * batch_size)   # B → 2B-1
-    labels_aug  = tf.range(batch_size)                   # 0 → B-1
-    labels      = tf.concat([labels_orig, labels_aug], axis=0)  # (2B,)
-
-    loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        labels=labels,
-        logits=sim_matrix,
-    )
-
-    return tf.reduce_mean(loss)
-
-
-# =============================================================================
-# STEP 5: TRAINING LOOPS
-# =============================================================================
-
-@tf.function
-def cl_train_step(model, batch, optimizer, temperature):
-    """Single contrastive learning training step."""
-    with tf.GradientTape() as tape:
-        # Encode both views
-        f_orig = model.encode(
-            batch["orig_input_ids"],
-            batch["orig_attention_mask"],
-            batch["orig_token_type_ids"],
-            training=True,
+        return np.asarray(split[0]), np.asarray(split[1])
+    except ValueError:
+        split = train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=seed,
+            stratify=None,
         )
-        f_aug = model.encode(
-            batch["aug_input_ids"],
-            batch["aug_attention_mask"],
-            batch["aug_token_type_ids"],
-            training=True,
+        return np.asarray(split[0]), np.asarray(split[1])
+
+
+def build_classifier_loaders(
+    all_samples: list[tuple[str, str]],
+    tokenizer,
+    label_encoder: LabelEncoder,
+    config: Config,
+) -> tuple[DataLoader, DataLoader, DataLoader, np.ndarray, list[str], np.ndarray]:
+    texts = [s[0] for s in all_samples]
+    labels = [s[1] for s in all_samples]
+
+    y = np.asarray(label_encoder.transform(labels), dtype=np.int64)
+    indices = np.arange(len(texts))
+
+    idx_train, idx_test = _safe_stratify_split(indices, y, config.TEST_SIZE, config.RANDOM_SEED)
+    relative_val = config.VAL_SIZE / (1.0 - config.TEST_SIZE)
+    idx_train, idx_val = _safe_stratify_split(idx_train, y[idx_train], relative_val, config.RANDOM_SEED)
+
+    train_ds = ClassifierDataset([texts[i] for i in idx_train], y[idx_train], tokenizer, config.MAX_SEQ_LEN)
+    val_ds = ClassifierDataset([texts[i] for i in idx_val], y[idx_val], tokenizer, config.MAX_SEQ_LEN)
+    test_ds = ClassifierDataset([texts[i] for i in idx_test], y[idx_test], tokenizer, config.MAX_SEQ_LEN)
+
+    train_loader = DataLoader(train_ds, batch_size=config.CLF_BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=config.CLF_BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=config.CLF_BATCH_SIZE, shuffle=False)
+
+    test_texts = [texts[i] for i in idx_test]
+    test_labels = y[idx_test]
+
+    return train_loader, val_loader, test_loader, idx_test, test_texts, test_labels
+
+
+def train_classifier(
+    model: CLModel,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    config: Config,
+    device: torch.device,
+) -> dict[str, list[float]]:
+    print("\n[4/5] Classifier training on frozen encoder...")
+
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+
+    optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=config.CLF_LR)
+    criterion = nn.CrossEntropyLoss()
+
+    history = {
+        "train_loss": [],
+        "val_loss": [],
+        "val_accuracy": [],
+    }
+
+    best_state = None
+    best_val_loss = float("inf")
+    patience = 3
+    no_improve = 0
+
+    for epoch in range(1, config.CLF_EPOCHS + 1):
+        model.train()
+        train_losses: list[float] = []
+        train_total_steps = len(train_loader)
+
+        for step, batch in enumerate(train_loader, start=1):
+            batch = _to_device(batch, device)
+            optimizer.zero_grad()
+
+            with torch.no_grad():
+                emb = model.encode(
+                    batch["input_ids"],
+                    batch["attention_mask"],
+                    batch.get("token_type_ids"),
+                )
+            logits = model.classify(emb)
+            loss = criterion(logits, batch["labels"])
+            loss.backward()
+            optimizer.step()
+            train_losses.append(float(loss.item()))
+            if step % config.LOG_EVERY_STEPS == 0 or step == train_total_steps:
+                running_avg = float(np.mean(train_losses)) if train_losses else 0.0
+                print(
+                    f"    [CLF-Train][Epoch {epoch}/{config.CLF_EPOCHS}] "
+                    f"step {step}/{train_total_steps} "
+                    f"loss={float(loss.item()):.4f} running_avg={running_avg:.4f}"
+                )
+
+        model.eval()
+        val_losses: list[float] = []
+        val_preds: list[int] = []
+        val_labels: list[int] = []
+        val_total_steps = len(val_loader)
+
+        with torch.no_grad():
+            for step, batch in enumerate(val_loader, start=1):
+                batch = _to_device(batch, device)
+                emb = model.encode(
+                    batch["input_ids"],
+                    batch["attention_mask"],
+                    batch.get("token_type_ids"),
+                )
+                logits = model.classify(emb)
+                loss = criterion(logits, batch["labels"])
+                val_losses.append(float(loss.item()))
+                preds = torch.argmax(logits, dim=1)
+                val_preds.extend(preds.cpu().tolist())
+                val_labels.extend(batch["labels"].cpu().tolist())
+                if step % config.LOG_EVERY_STEPS == 0 or step == val_total_steps:
+                    running_avg = float(np.mean(val_losses)) if val_losses else 0.0
+                    print(
+                        f"    [CLF-Val][Epoch {epoch}/{config.CLF_EPOCHS}] "
+                        f"step {step}/{val_total_steps} "
+                        f"loss={float(loss.item()):.4f} running_avg={running_avg:.4f}"
+                    )
+
+        avg_train_loss = float(np.mean(train_losses)) if train_losses else 0.0
+        avg_val_loss = float(np.mean(val_losses)) if val_losses else 0.0
+        val_acc = float(accuracy_score(val_labels, val_preds)) if val_labels else 0.0
+
+        history["train_loss"].append(avg_train_loss)
+        history["val_loss"].append(avg_val_loss)
+        history["val_accuracy"].append(val_acc)
+
+        print(
+            f"  Epoch {epoch}/{config.CLF_EPOCHS} - "
+            f"train_loss={avg_train_loss:.4f} val_loss={avg_val_loss:.4f} val_acc={val_acc:.4f}"
         )
-        # Project to contrastive space
-        z_orig = model.project(f_orig, training=True)
-        z_aug  = model.project(f_aug,  training=True)
 
-        # InfoNCE loss
-        loss = infonce_loss(z_orig, z_aug, temperature)
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_state = copy.deepcopy(model.classifier.state_dict())
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print("  Early stopping triggered.")
+                break
 
-    grads = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
-    return loss
+    if best_state is not None:
+        model.classifier.load_state_dict(best_state)
 
-
-def train_contrastive(model, dataset, config: Config):
-    """
-    Phase 1: Contrastive pre-training.
-    Trains BERT encoder + projection head using InfoNCE loss.
-    Classifier weights are NOT updated here.
-    """
-    print("\n[3/5] Contrastive Pre-Training (Phase 1)...")
-
-    optimizer = keras.optimizers.Adam(learning_rate=config.CL_LR)
-    history   = []
-
-    for epoch in range(config.CL_EPOCHS):
-        epoch_losses = []
-
-        for step, batch in enumerate(dataset):
-            print(f"Total Epochs: {config.CL_EPOCHS}, Total Steps: {len(dataset)}, Current Epoch: {epoch+1}, Current Step: {step+1}")
-            loss = cl_train_step(model, batch, optimizer, config.TEMPERATURE)
-            epoch_losses.append(float(loss))
-
-            if step % 20 == 0:
-                print(f"  Epoch {epoch+1}/{config.CL_EPOCHS} "
-                      f"| Step {step} | Loss: {float(loss):.4f}")
-
-        avg_loss = np.mean(epoch_losses)
-        history.append(avg_loss)
-        print(f"  → Epoch {epoch+1} complete | Avg Loss: {avg_loss:.4f}")
-
-    print("  Contrastive pre-training done.")
     return history
 
 
-def train_classifier(model, train_ds, val_ds, config: Config, num_classes: int):
-    """
-    Phase 2: Classifier training on frozen encoder.
-    Freezes BERT + projector, trains only the classifier head.
-    """
-    print("\n[4/5] Classifier Training (Phase 2)...")
+def evaluate_and_export(
+    model: CLModel,
+    test_loader: DataLoader,
+    test_texts: list[str],
+    test_labels_int: np.ndarray,
+    label_encoder: LabelEncoder,
+    config: Config,
+    device: torch.device,
+) -> tuple[float, str, str]:
+    print("\n[5/5] Evaluation and export...")
 
-    # Freeze encoder and projector
-    model.bert.trainable      = False
-    model.projector.trainable = False
-    model.classifier.trainable = True
+    model.eval()
 
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=config.CLF_LR),
-        loss=keras.losses.SparseCategoricalCrossentropy(),
-        metrics=["accuracy"],
-    )
+    y_pred: list[int] = []
+    y_probs: list[list[float]] = []
+    embeddings: list[list[float]] = []
 
-    callbacks = [
-        keras.callbacks.EarlyStopping(
-            monitor="val_accuracy", patience=3, restore_best_weights=True
-        ),
-        keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.5, patience=2, verbose=1
-        ),
-    ]
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = _to_device(batch, device)
+            emb = model.encode(
+                batch["input_ids"],
+                batch["attention_mask"],
+                batch.get("token_type_ids"),
+            )
+            logits = model.classify(emb)
+            probs = F.softmax(logits, dim=1)
+            preds = torch.argmax(probs, dim=1)
 
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=config.CLF_EPOCHS,
-        callbacks=callbacks,
-        verbose=1,
-    )
+            y_pred.extend(preds.cpu().tolist())
+            y_probs.extend(probs.cpu().tolist())
+            embeddings.extend(emb.cpu().tolist())
 
-    return history
-
-
-# =============================================================================
-# STEP 6: EVALUATION & OUTPUT GENERATION
-# =============================================================================
-
-def evaluate_and_export(model, test_ds, test_texts, test_labels_int,
-                         label_encoder, config: Config, tokenizer):
-    """
-    Evaluates on test set and exports:
-        1. embeddings + predictions JSON   → for Fact Verification stage
-        2. classification report           → printed + saved
-        3. model weights                   → saved to OUTPUT_DIR
-    """
-    print("\n[5/5] Evaluation & Export...")
-
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-
-    # --- Predictions ---
-    y_pred_probs = model.predict(test_ds, verbose=0)
-    y_pred       = np.argmax(y_pred_probs, axis=1)
-
-    acc = accuracy_score(test_labels_int, y_pred)
-    print(f"\n  Test Accuracy: {acc:.4f}")
-    print("\n  Classification Report:")
-    report = classification_report(
-        test_labels_int, y_pred,
-        target_names=label_encoder.classes_,
+    acc = float(accuracy_score(test_labels_int, y_pred))
+    report_text = str(
+        classification_report(
+        test_labels_int,
+        y_pred,
+        target_names=list(label_encoder.classes_),
         digits=4,
-    )
-    print(report)
-
-    # Save report
-    with open(os.path.join(config.OUTPUT_DIR, "classification_report.txt"), "w") as f:
-        f.write(f"Test Accuracy: {acc:.4f}\n\n")
-        f.write(report)
-
-    # --- Extract embeddings from frozen encoder ---
-    print("  Extracting embeddings for handoff...")
-
-    # Re-tokenize test texts to get embeddings
-    enc = tokenize_texts(test_texts, tokenizer, config.MAX_SEQ_LEN)
-    test_enc_ds = tf.data.Dataset.from_tensor_slices(enc).batch(64)
-
-    embeddings = []
-    for batch in test_enc_ds:
-        f = model.encode(
-            batch["input_ids"],
-            batch["attention_mask"],
-            batch["token_type_ids"],
-            training=False,
+        zero_division=0,
         )
-        embeddings.append(f.numpy())
+    )
 
-    embeddings = np.concatenate(embeddings, axis=0)
+    report_path = os.path.join(config.OUTPUT_DIR, "classification_report.txt")
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write(f"Accuracy: {acc:.4f}\n\n")
+        handle.write(report_text)
 
-    # --- Build handoff JSON for Fact Verification ---
+    print(f"  Test accuracy: {acc:.4f}")
+    print(f"  Classification report saved -> {report_path}")
+
     handoff = []
     for i, text in enumerate(test_texts):
-        handoff.append({
-            "text"            : text,
-            "predicted_label" : label_encoder.classes_[y_pred[i]],
-            "true_label"      : label_encoder.classes_[test_labels_int[i]],
-            "label_probs"     : {
-                cls: float(y_pred_probs[i][j])
-                for j, cls in enumerate(label_encoder.classes_)
-            },
-            "embedding"       : embeddings[i].tolist(),   # 768-dim BERT [CLS]
-        })
+        handoff.append(
+            {
+                "text": text,
+                "predicted_label": label_encoder.classes_[y_pred[i]],
+                "true_label": label_encoder.classes_[test_labels_int[i]],
+                "label_probs": {
+                    cls: float(y_probs[i][j])
+                    for j, cls in enumerate(label_encoder.classes_)
+                },
+                "embedding": embeddings[i],
+            }
+        )
 
     handoff_path = os.path.join(config.OUTPUT_DIR, "cl_outputs_for_fact_verification.json")
-    with open(handoff_path, "w", encoding="utf-8") as f:
-        json.dump(handoff, f, indent=2, ensure_ascii=False)
+    with open(handoff_path, "w", encoding="utf-8") as handle:
+        json.dump(handoff, handle, indent=2, ensure_ascii=False)
 
-    print(f"  Handoff file saved → {handoff_path}")
-    print(f"  Records in handoff : {len(handoff)}")
-    print(f"  Embedding shape    : {embeddings.shape}")
+    print(f"  Handoff file saved -> {handoff_path}")
 
-    # --- Save model weights ---
-    weights_path = os.path.join(config.OUTPUT_DIR, "cl_model_weights")
-    model.save_weights(weights_path)
-    print(f"  Model weights saved → {weights_path}")
+    weights_path = os.path.join(config.OUTPUT_DIR, "cl_model_weights.pt")
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "label_classes": list(label_encoder.classes_),
+            "config": asdict(config),
+        },
+        weights_path,
+    )
+    print(f"  Model weights saved -> {weights_path}")
 
-    return acc, report, handoff_path
-
-
-# =============================================================================
-# MAIN PIPELINE
-# =============================================================================
-
-def main():
-    print("=" * 65)
-    print(" LACL — Contrastive Learning Module")
-    print("=" * 65)
-
-    config = Config()
-    run_training(data_path=config.DATA_PATH, output_dir=config.OUTPUT_DIR, config=config)
+    return acc, report_text, handoff_path
 
 
 def run_training(
@@ -605,6 +557,7 @@ def run_training(
     output_dir: str,
     config: Config | None = None,
     emotion_sim_threshold: float | None = None,
+    use_gpu: bool = False,
 ) -> dict:
     config = config or Config()
     config.DATA_PATH = data_path
@@ -615,65 +568,73 @@ def run_training(
     if not Path(config.DATA_PATH).exists():
         raise FileNotFoundError(f"Training data file not found: {config.DATA_PATH}")
 
+    if use_gpu and not torch.cuda.is_available():
+        raise RuntimeError("--use-gpu was requested, but CUDA is not available in PyTorch.")
+
+    device = torch.device("cuda" if use_gpu else "cpu")
+
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    set_global_seed(config.RANDOM_SEED)
 
-    # ── 1. Load & pair data ──────────────────────────────────────────
     pairs, all_samples = load_and_pair_data(config)
+    if not pairs:
+        raise ValueError("No valid contrastive pairs were found in the training data.")
+    if not all_samples:
+        raise ValueError("No classifier samples were found in the training data.")
 
-    # ── 2. Setup tokenizer & encoder ─────────────────────────────────
-    print("\n[2/5] Loading BERT tokenizer & model...")
-    tokenizer  = AutoTokenizer.from_pretrained(config.BERT_MODEL_NAME)
-    bert_model = TFBertModel.from_pretrained(config.BERT_MODEL_NAME)
-    print(f"  BERT loaded: {config.BERT_MODEL_NAME}")
+    print("\n[2/5] Loading tokenizer and encoder...")
+    tokenizer = AutoTokenizer.from_pretrained(config.BERT_MODEL_NAME)
+    encoder = AutoModel.from_pretrained(config.BERT_MODEL_NAME)
 
-    # ── 3. Label encoding ────────────────────────────────────────────
     label_encoder = LabelEncoder()
     label_encoder.fit(config.LABEL_NAMES)
-    num_classes   = len(label_encoder.classes_)
-    print(f"  Classes ({num_classes}): {list(label_encoder.classes_)}")
+    num_classes = len(label_encoder.classes_)
 
-    # ── 4. Build TF datasets ─────────────────────────────────────────
-    print("\n  Building CL pair dataset...")
-    cl_dataset = build_pair_dataset(pairs, tokenizer, config)
+    pair_ds = ContrastivePairDataset(pairs, tokenizer, config.MAX_SEQ_LEN)
+    cl_loader = DataLoader(pair_ds, batch_size=config.CL_BATCH_SIZE, shuffle=True)
 
-    print("  Building classifier dataset...")
-    (train_ds, val_ds, test_ds,
-     test_idx, test_labels_int,
-     test_texts) = build_classifier_dataset(
-        all_samples, tokenizer, label_encoder, config
+    train_loader, val_loader, test_loader, _test_idx, test_texts, test_labels_int = build_classifier_loaders(
+        all_samples,
+        tokenizer,
+        label_encoder,
+        config,
     )
 
-    # ── 5. Build model ───────────────────────────────────────────────
-    model = CLModel(bert_model, config, num_classes, name="LACL_CL")
+    model = CLModel(encoder, config.HIDDEN_DIM, config.PROJECTION_DIM, num_classes).to(device)
 
-    # ── 6. Phase 1: Contrastive pre-training ─────────────────────────
-    cl_history = train_contrastive(model, cl_dataset, config)
+    cl_history = train_contrastive(model, cl_loader, config, device)
+    clf_history = train_classifier(model, train_loader, val_loader, config, device)
 
-    # ── 7. Phase 2: Classifier training ──────────────────────────────
-    clf_history = train_classifier(model, train_ds, val_ds, config, num_classes)
-
-    # ── 8. Evaluate & export ─────────────────────────────────────────
     acc, report, handoff_path = evaluate_and_export(
-        model, test_ds, test_texts, test_labels_int,
-        label_encoder, config, tokenizer
+        model,
+        test_loader,
+        test_texts,
+        test_labels_int,
+        label_encoder,
+        config,
+        device,
     )
 
-    # ── 9. Save training history ─────────────────────────────────────
     history_path = os.path.join(config.OUTPUT_DIR, "training_history.json")
-    with open(history_path, "w") as f:
-        json.dump({
-            "cl_loss_per_epoch"       : cl_history,
-            "clf_val_accuracy"        : clf_history.history.get("val_accuracy", []),
-            "clf_val_loss"            : clf_history.history.get("val_loss", []),
-            "final_test_accuracy"     : acc,
-        }, f, indent=2)
+    with open(history_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "cl_loss_per_epoch": cl_history,
+                "clf_train_loss": clf_history.get("train_loss", []),
+                "clf_val_loss": clf_history.get("val_loss", []),
+                "clf_val_accuracy": clf_history.get("val_accuracy", []),
+                "final_test_accuracy": acc,
+            },
+            handle,
+            indent=2,
+        )
 
     print("\n" + "=" * 65)
-    print(f" Done. All outputs saved to → {config.OUTPUT_DIR}/")
-    print(f"   cl_outputs_for_fact_verification.json  ← handoff to Fact Verification")
-    print(f"   cl_model_weights.*                     ← saved model")
-    print(f"   classification_report.txt              ← eval results")
-    print(f"   training_history.json                  ← loss/accuracy curves")
+    print(f" Done. All outputs saved to -> {config.OUTPUT_DIR}/")
+    print("   cl_outputs_for_fact_verification.json  -> handoff to Fact Verification")
+    print("   cl_model_weights.pt                    -> saved model")
+    print("   classification_report.txt              -> eval results")
+    print("   training_history.json                  -> loss/accuracy curves")
     print("=" * 65)
 
     return {
@@ -682,7 +643,22 @@ def run_training(
         "test_accuracy": acc,
         "handoff_path": handoff_path,
         "history_path": history_path,
+        "device": str(device),
     }
+
+
+def main() -> None:
+    print("=" * 65)
+    print(" LACL — Contrastive Learning Module (PyTorch)")
+    print("=" * 65)
+
+    config = Config()
+    run_training(
+        data_path=config.DATA_PATH,
+        output_dir=config.OUTPUT_DIR,
+        config=config,
+        use_gpu=False,
+    )
 
 
 if __name__ == "__main__":

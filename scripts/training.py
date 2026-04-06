@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,43 +18,56 @@ def _is_likely_dedicated_gpu(device_name: str) -> bool:
     return not any(marker in lowered for marker in integrated_markers)
 
 
-def _configure_training_device(use_gpu: bool) -> str:
-    import tensorflow as tf
+def _detect_nvidia_gpu_names() -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
 
-    gpus = tf.config.list_physical_devices("GPU")
+    if completed.returncode != 0:
+        return []
+
+    names = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return names
+
+
+def _configure_training_device(use_gpu: bool) -> str:
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "PyTorch is not installed in the active environment. "
+            "Install dependencies with: pip install -r requirements.txt"
+        ) from exc
 
     if not use_gpu:
-        # Keep default execution on CPU unless user explicitly opts in to GPU training.
-        tf.config.set_visible_devices([], "GPU")
         return "CPU"
 
-    if not gpus:
+    if not torch.cuda.is_available():
+        nvidia_names = _detect_nvidia_gpu_names()
+        details = ["--use-gpu was requested, but CUDA is not available in this PyTorch runtime."]
+        if nvidia_names:
+            details.append(
+                "Detected NVIDIA GPU hardware via nvidia-smi: " + ", ".join(nvidia_names)
+            )
+            details.append(
+                "Install a CUDA-enabled PyTorch build matching your driver/CUDA setup."
+            )
+        raise SystemExit(" ".join(details))
+
+    device_name = torch.cuda.get_device_name(0)
+    if not _is_likely_dedicated_gpu(device_name):
         raise SystemExit(
-            "--use-gpu was requested, but no GPU was detected by TensorFlow."
+            "--use-gpu was requested, but detected CUDA device appears integrated: "
+            f"{device_name}"
         )
 
-    dedicated_candidates = []
-    for gpu in gpus:
-        details = tf.config.experimental.get_device_details(gpu)
-        device_name = str(details.get("device_name", gpu.name))
-        if _is_likely_dedicated_gpu(device_name):
-            dedicated_candidates.append((gpu, device_name))
-
-    if not dedicated_candidates:
-        raise SystemExit(
-            "--use-gpu was requested, but no dedicated GPU was found. "
-            "Detected GPUs appear to be integrated only."
-        )
-
-    selected_gpu, selected_name = dedicated_candidates[0]
-    tf.config.set_visible_devices([selected_gpu], "GPU")
-    try:
-        tf.config.experimental.set_memory_growth(selected_gpu, True)
-    except Exception:
-        # Memory growth may not be supported on all configurations.
-        pass
-
-    return f"GPU ({selected_name})"
+    return f"GPU ({device_name})"
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,6 +109,7 @@ def main() -> None:
         data_path=str(args.data_path),
         output_dir=str(args.output_dir),
         emotion_sim_threshold=args.emotion_sim_threshold,
+        use_gpu=args.use_gpu,
     )
     result["device_mode"] = device_mode
     print(json.dumps(result, ensure_ascii=False, indent=2))
